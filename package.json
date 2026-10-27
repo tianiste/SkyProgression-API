@@ -2,6 +2,7 @@
   "name": "skyprogression-api",
   "version": "0.1.0",
   "private": true,
+  "license": "MIT",
   "description": "Thin Cloudflare Worker that serves Hypixel SkyBlock profiles and a price bundle to the SkyProgression mod.",
   "type": "module",
   "scripts": {

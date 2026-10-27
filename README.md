@@ -140,3 +140,7 @@ To test profiles locally, provide the key through the process environment only (
 ## Checks
 
 GitHub Actions type-checks the Worker and runs `wrangler deploy --dry-run` on every push. It does not deploy.
+
+## License
+
+MIT License, see [LICENSE](LICENSE).
