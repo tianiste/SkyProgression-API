@@ -28,7 +28,10 @@ export async function get(url: string, headers: Record<string, string> = {}, tim
 }
 
 /** Whole body as bytes, refusing anything larger than maxBytes (checked on the header and while reading). */
-export async function boundedBytes(response: Response, maxBytes: number): Promise<ArrayBuffer> {
+/** A request body can be read the same way. */
+type Body = Pick<Response, "headers" | "body">;
+
+export async function boundedBytes(response: Body, maxBytes: number): Promise<ArrayBuffer> {
   const declared = Number(response.headers.get("Content-Length") ?? "0");
   if (declared > maxBytes) throw new HttpError(502, "too_large", "Upstream response too large");
   if (!response.body) return new ArrayBuffer(0);
@@ -51,10 +54,10 @@ export async function boundedBytes(response: Response, maxBytes: number): Promis
   return out.buffer;
 }
 
-export async function boundedText(response: Response, maxBytes: number): Promise<string> {
+export async function boundedText(response: Body, maxBytes: number): Promise<string> {
   return new TextDecoder().decode(await boundedBytes(response, maxBytes));
 }
 
-export async function boundedJson<T>(response: Response, maxBytes: number): Promise<T> {
+export async function boundedJson<T>(response: Body, maxBytes: number): Promise<T> {
   return JSON.parse(await boundedText(response, maxBytes)) as T;
 }

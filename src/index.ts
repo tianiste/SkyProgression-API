@@ -1,3 +1,4 @@
+import { checklist, cors, preflight } from "./checklist";
 import { HttpError, error, json } from "./http";
 import { priceStatus, prices, refreshPrices, resale } from "./prices";
 import { profile, relayUrl, uuid } from "./profile";
@@ -12,13 +13,23 @@ export interface Env {
   IP_LIMIT: RateLimit;
   PLAYER_LIMIT: RateLimit;
   HYPIXEL_LIMIT: RateLimit;
+  CHECKLIST_LIMIT: RateLimit;
 }
 
 async function route(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-  if (request.method !== "GET") throw new HttpError(405, "method", "GET required.");
-  // Browsers send Origin on cross-site requests; the mod does not. No CORS: pages cannot use this API.
-  if (request.headers.has("Origin")) throw new HttpError(403, "forbidden", "Browser access is not supported.");
   const url = new URL(request.url);
+  if (url.pathname === "/checklist") {
+    // The website's player lookup: the only endpoint pages may call (CORS for skyprogression.dev).
+    if (request.method === "OPTIONS") return preflight(request);
+    if (request.method !== "POST") throw new HttpError(405, "method", "POST required.");
+    cors(request);
+    const ip = request.headers.get("CF-Connecting-IP") ?? "unknown";
+    if (!(await env.IP_LIMIT.limit({ key: ip })).success) throw new HttpError(429, "rate_limited", "Too many requests. Wait a minute.", 60);
+    return checklist(request, env, ctx);
+  }
+  if (request.method !== "GET") throw new HttpError(405, "method", "GET required.");
+  // Browsers send Origin on cross-site requests; the mod does not. No CORS: pages cannot use the other endpoints.
+  if (request.headers.has("Origin")) throw new HttpError(403, "forbidden", "Browser access is not supported.");
   if (url.pathname === "/health") {
     return json({ ok: true, ready: Boolean(env.HYPIXEL_API_KEY?.trim() || relayUrl(env)), relay: Boolean(relayUrl(env)), prices: await priceStatus(env).catch(() => null) });
   }
@@ -46,13 +57,20 @@ async function route(request: Request, env: Env, ctx: ExecutionContext): Promise
 
 export default {
   async fetch(request, env, ctx): Promise<Response> {
+    let response: Response;
     try {
-      return await route(request, env, ctx);
+      response = await route(request, env, ctx);
     } catch (e) {
-      if (e instanceof HttpError) return error(e);
       // Never echo upstream bodies or keys; a short generic message is enough for the mod.
-      return error(new HttpError(502, "upstream", "Data service unavailable. Please try again later."));
+      response = error(e instanceof HttpError ? e : new HttpError(502, "upstream", "Data service unavailable. Please try again later."));
     }
+    // Allowed pages also need CORS headers on errors, or the browser hides the message.
+    if (new URL(request.url).pathname === "/checklist") {
+      let headers: Record<string, string> = {};
+      try { headers = cors(request); } catch { /* Other origins get no CORS headers. */ }
+      for (const [k, v] of Object.entries(headers)) response.headers.set(k, v);
+    }
+    return response;
   },
   async scheduled(_controller, env, ctx): Promise<void> {
     ctx.waitUntil(refreshPrices(env).then((r) => console.log(`prices: ${r.step}, ${r.auctions} auction quotes, ${r.prices} prices`)));

@@ -7,8 +7,9 @@ holds the Hypixel API key, caches, and rate-limits.
 
 ## Endpoints
 
-All endpoints are `GET` and answer JSON. Errors look like `{"error": "message", "code": "rate_limited"}`.
-Requests that carry a browser `Origin` header are refused (no CORS).
+All endpoints answer JSON; all but `/checklist` are `GET`. Errors look like `{"error": "message", "code": "rate_limited"}`.
+Requests that carry a browser `Origin` header are refused, except `/checklist` from the website (CORS for
+`https://skyprogression.dev`, `https://www.skyprogression.dev` and the Astro dev server `http://localhost:4321`).
 
 | Endpoint | What it returns |
 | --- | --- |
@@ -17,9 +18,19 @@ Requests that carry a browser `Origin` header are refused (no CORS).
 | `/profile?uuid=<32 hex>[&fresh=1]` | The raw Hypixel `v2/skyblock/profiles` body, passed through unparsed (max 16 MB). `X-Fetched-At` says when it was fetched; `X-Cache` is `HIT`, `STALE` or `MISS` |
 | `/prices` | `{"updatedAt", "prices": {id: {buy, sell, source, updatedAt, available, npc?, npcUpdatedAt?}}, "mayor": [...] \| null, "complete", "bazaarAt"}` |
 | `/resale?tag=<item>&Rarity=...` | `{"price": {...} \| null}`: Coflnet's lowest BIN for one item copy with its modifiers |
+| `POST /checklist` | Body `{"ign" or "uuid", "profile"?: id or name, "requirements": [...]}` (a guide's requirements, the website's `/guides/<id>.json` format; max 128 KB). Answers `{"player", "uuid", "profile", "profiles": [{id, name, mode, selected}], "fetchedAt", "api": {inventory, vault, collections, skills}, "results": [{id, state, ...}]}`; `state` is `owned`, `partial`, `missing`, `unknown` or `manual`. Evaluated by the engine on the relay |
 
-Status codes: `400` bad input, `404` unknown player, `429` rate limited (with `Retry-After`), `502` an upstream
-service failed, `503` no or invalid Hypixel key (profiles only) or prices still loading.
+Status codes: `400` bad input, `404` unknown player or profile, `413` request too large, `429` rate limited (with
+`Retry-After`), `502` an upstream service or the relay failed, `503` no or invalid Hypixel key, prices still loading, or
+`/checklist` without a relay (`unavailable`: "Player lookup is not available yet").
+
+### Checklist
+
+The website sends a guide's requirements and a player; the Worker resolves the name, forwards to the relay (the
+companion runs the same Java engine as the mod) and reuses a result for 2 minutes per player, profile and requirements
+(SHA-256 of the requirements, so a changed guide is a new key). Limits: 20 lookups per minute per IP plus the general
+per-IP limit and the global Hypixel limit; the relay reuses its profile copy for 5 minutes, so looking at several guides
+costs one Hypixel call. Without `RELAY_URL` and `RELAY_SECRET` it answers `503` `unavailable`.
 
 ### Profiles
 
@@ -64,7 +75,7 @@ itself: the Worker validates the filters, reuses Coflnet's filter list per item 
 
 | Limit | Value |
 | --- | --- |
-| Requests per IP | 240 per minute (`/health` is not counted) |
+| Requests per IP | 240 per minute (`/health` is not counted); `/checklist` also 20 per minute |
 | Hypixel refreshes per player | 4 per minute |
 | Hypixel calls in total | 100 per minute per Cloudflare location |
 | Profile body | 16 MB |
