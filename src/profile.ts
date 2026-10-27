@@ -56,13 +56,19 @@ function respond(entry: Entry, state: string, extra: Record<string, string> = {}
 }
 
 async function fetchProfile(uuid: string, env: Env, ctx: ExecutionContext): Promise<Entry> {
-  if (!env.HYPIXEL_API_KEY) throw new HttpError(503, "no_key", "The server has no Hypixel API key configured.");
+  // Trimmed: a key pasted into the dashboard with a space or line break would otherwise be rejected as invalid.
+  const key = env.HYPIXEL_API_KEY?.trim().replace(/^["']|["']$/g, "");
+  if (!key) throw new HttpError(503, "no_key", "The server has no Hypixel API key configured.");
   const player = await env.PLAYER_LIMIT.limit({ key: uuid });
   if (!player.success) throw new HttpError(429, "rate_limited", "This player was refreshed too often. Wait a minute.", 60);
   const global = await env.HYPIXEL_LIMIT.limit({ key: "hypixel" });
   if (!global.success) throw new HttpError(429, "rate_limited", "The server is busy. Wait a minute before loading again.", 60);
-  const response = await get(`https://api.hypixel.net/v2/skyblock/profiles?uuid=${uuid}`, { "API-Key": env.HYPIXEL_API_KEY }, 15_000);
-  if (response.status === 403) throw new HttpError(503, "bad_key", "The server's Hypixel API key is invalid or expired.");
+  const response = await get(`https://api.hypixel.net/v2/skyblock/profiles?uuid=${uuid}`, { "API-Key": key }, 15_000);
+  if (response.status === 403) {
+    // Hypixel's short reason ("Invalid API key"), never the key itself.
+    const cause = await boundedJson<{ cause?: string }>(response, 4096).then((b) => String(b.cause ?? "").slice(0, 80)).catch(() => "");
+    throw new HttpError(503, "bad_key", `The server's Hypixel API key was rejected${cause ? ` (Hypixel: ${cause})` : ""}.`);
+  }
   if (response.status === 429) throw new HttpError(429, "rate_limited", "Hypixel rate limit reached. Wait a few minutes.", 120);
   if (response.status === 404 || response.status === 204) throw new HttpError(404, "not_found", "Player not found.");
   if (response.status !== 200) throw new HttpError(502, "upstream", `Hypixel returned ${response.status}.`);

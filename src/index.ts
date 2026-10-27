@@ -17,7 +17,7 @@ async function route(request: Request, env: Env, ctx: ExecutionContext): Promise
   if (request.headers.has("Origin")) throw new HttpError(403, "forbidden", "Browser access is not supported.");
   const url = new URL(request.url);
   if (url.pathname === "/health") {
-    return json({ ok: true, ready: Boolean(env.HYPIXEL_API_KEY), prices: await priceStatus(env).catch(() => null) });
+    return json({ ok: true, ready: Boolean(env.HYPIXEL_API_KEY?.trim()), prices: await priceStatus(env).catch(() => null) });
   }
   const ip = request.headers.get("CF-Connecting-IP") ?? "unknown";
   if (!(await env.IP_LIMIT.limit({ key: ip })).success) throw new HttpError(429, "rate_limited", "Too many requests. Wait a minute.", 60);
