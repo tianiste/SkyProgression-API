@@ -64,8 +64,27 @@ async function fetchProfile(uuid: string, env: Env, ctx: ExecutionContext): Prom
   if (!player.success) throw new HttpError(429, "rate_limited", "This player was refreshed too often. Wait a minute.", 60);
   const global = await env.HYPIXEL_LIMIT.limit({ key: "hypixel" });
   if (!global.success) throw new HttpError(429, "rate_limited", "The server is busy. Wait a minute before loading again.", 60);
-  if (relay) return fromRelay(relay, uuid, env, ctx);
-  const response = await get(`https://api.hypixel.net/v2/skyblock/profiles?uuid=${uuid}`, { "API-Key": key! }, 15_000);
+  if (relay && Date.now() >= relaySkipUntil) {
+    try {
+      return await fromRelay(relay, uuid, env, ctx);
+    } catch (e) {
+      // The relay's key not valid yet (e.g. an application key under review) or the relay down: use this Worker's own
+      // key when it has one, and skip the relay for a while instead of asking it on every lookup.
+      if (!(e instanceof HttpError) || !key || (e.code !== "bad_key" && e.code !== "relay")) throw e;
+      relaySkipUntil = Date.now() + RELAY_RETRY_MS;
+    }
+  }
+  if (!key) throw new HttpError(503, "bad_key", "The profile relay has no working Hypixel key.");
+  return direct(uuid, key, ctx);
+}
+
+/** After the relay's key was rejected or the relay failed, profiles go direct for this long before the relay is tried again. */
+const RELAY_RETRY_MS = 10 * 60_000;
+let relaySkipUntil = 0;
+
+/** Hypixel called from the Worker with its own key (a personal or development key; no IP allowlist). */
+async function direct(uuid: string, key: string, ctx: ExecutionContext): Promise<Entry> {
+  const response = await get(`https://api.hypixel.net/v2/skyblock/profiles?uuid=${uuid}`, { "API-Key": key }, 15_000);
   if (response.status === 403) {
     // Hypixel's short reason ("Invalid API key"), never the key itself.
     const cause = await boundedJson<{ cause?: string }>(response, 4096).then((b) => String(b.cause ?? "").slice(0, 80)).catch(() => "");
