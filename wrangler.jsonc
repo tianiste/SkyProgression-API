@@ -6,7 +6,7 @@
   // Workers Logs (Cloudflare dashboard). The Worker never logs keys or response bodies.
   "observability": { "enabled": true },
   // Profile relay on a fixed-IP server (see the mod repository, deploy/relay). Empty: the Worker calls Hypixel itself.
-  "vars": { "RELAY_URL": "" },
+  "vars": { "RELAY_URL": "https://relay.skyprogression.dev" },
   // Every three minutes: one cron step refreshes one Hypixel resource and up to 40 Coflnet quotes.
   "triggers": { "crons": ["*/3 * * * *"] },
   // Wrangler creates the namespace on the first deploy and remembers it; no ID needs to be committed.
