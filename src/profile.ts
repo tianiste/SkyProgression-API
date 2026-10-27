@@ -10,7 +10,7 @@ const MAX_PROFILE_BYTES = 16 * 1024 * 1024;
 const MEMORY_ENTRIES = 8;
 const MEMORY_BYTES = 48 * 1024 * 1024;
 
-interface Entry { at: number; body: ArrayBuffer }
+export interface Entry { at: number; body: ArrayBuffer }
 
 const memory = new Map<string, Entry>();
 const inflight = new Map<string, Promise<Entry>>();
@@ -164,18 +164,27 @@ function refresh(uuid: string, env: Env, ctx: ExecutionContext): Promise<Entry> 
 
 /** Raw Hypixel profiles response for a UUID. fresh: refetch when the copy is older than five minutes instead of serving it. */
 export async function profile(uuid: string, fresh: boolean, env: Env, ctx: ExecutionContext): Promise<Response> {
+  const { entry, state, refreshError } = await profileEntry(uuid, fresh, env, ctx);
+  return respond(entry, state, refreshError ? { "X-Refresh-Error": refreshError } : {});
+}
+
+/**
+ * The cached or freshly fetched profiles body with its state (HIT, STALE or MISS): relay first, then this Worker's own
+ * key, with the per-player and Hypixel limits. /profile and /checklist share it.
+ */
+export async function profileEntry(uuid: string, fresh: boolean, env: Env, ctx: ExecutionContext): Promise<{ entry: Entry; state: string; refreshError?: string }> {
   const entry = await cached(uuid);
   const age = entry ? Date.now() - entry.at : Infinity;
-  if (entry && age < FRESH_MS) return respond(entry, "HIT");
+  if (entry && age < FRESH_MS) return { entry, state: "HIT" };
   if (entry && age < STALE_MS && !fresh) {
     ctx.waitUntil(refresh(uuid, env, ctx).catch(() => undefined));
-    return respond(entry, "STALE");
+    return { entry, state: "STALE" };
   }
   try {
-    return respond(await refresh(uuid, env, ctx), "MISS");
+    return { entry: await refresh(uuid, env, ctx), state: "MISS" };
   } catch (e) {
     // A failed refresh still answers with the copy we have, labelled, rather than an error.
-    if (entry && e instanceof HttpError && e.status !== 404) return respond(entry, "STALE", { "X-Refresh-Error": e.code });
+    if (entry && e instanceof HttpError && e.status !== 404) return { entry, state: "STALE", refreshError: e.code };
     throw e;
   }
 }

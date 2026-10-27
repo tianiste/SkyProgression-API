@@ -1,12 +1,12 @@
 import { HttpError, baseHeaders, boundedJson, boundedText, USER_AGENT } from "./http";
 import type { Env } from "./index";
-import { relayUrl, uuid } from "./profile";
+import { profileEntry, relayUrl, uuid } from "./profile";
 
 /** Pages that may call /checklist from a browser: the website, www and the local Astro dev server. */
 const ORIGINS = new Set(["https://skyprogression.dev", "https://www.skyprogression.dev", "http://localhost:4321", "http://127.0.0.1:4321"]);
 const MAX_BODY_BYTES = 128 * 1024;
 const MAX_RESULT_BYTES = 1024 * 1024;
-/** A result is reused this long for the same player, profile and requirements (the relay's profile copy lives 5 minutes). */
+/** A result is reused this long for the same player, profile and requirements (the profile copy itself is fresh for 5 minutes). */
 const RESULT_MS = 2 * 60_000;
 const MEMORY_ENTRIES = 64;
 
@@ -63,16 +63,21 @@ export async function checklist(request: Request, env: Env, ctx: ExecutionContex
   const hit = await cached(key);
   if (hit) return answer(hit.body, player, "HIT");
 
+  // The engine runs on the relay; without one there is nothing to evaluate with.
   const relay = relayUrl(env);
   if (!relay) throw new HttpError(503, "unavailable", "Player lookup is not available yet.");
-  // No per-player limit: one lookup per guide is normal, and the relay reuses its profile copy for five minutes.
-  if (!(await env.HYPIXEL_LIMIT.limit({ key: "hypixel" })).success) throw new HttpError(429, "rate_limited", "The server is busy. Wait a minute.", 60);
+  // The profile comes the same way as /profile (cache, relay, then this Worker's own key, per-player and Hypixel limits);
+  // several guides for one player reuse the cached copy. The relay only runs the engine on it.
+  const { entry } = await profileEntry(id, false, env, ctx);
+  const head = JSON.stringify({ uuid: id, profile, fetchedAt: new Date(entry.at).toISOString() });
+  // The raw body is spliced in as bytes: parsing a large profile would cost more CPU than the Worker has.
+  const payload = new Blob([`${head.slice(0, -1)},"requirements":${requirements},"data":`, entry.body, "}"]);
   let response: Response;
   try {
     response = await fetch(`${relay}/checklist`, {
       method: "POST",
       headers: { "User-Agent": USER_AGENT, "Content-Type": "application/json", Accept: "application/json", "X-Relay-Secret": env.RELAY_SECRET!.trim() },
-      body: JSON.stringify({ uuid: id, profile, requirements: body.requirements }),
+      body: payload,
       signal: AbortSignal.timeout(25_000),
     });
   } catch {
@@ -83,9 +88,9 @@ export async function checklist(request: Request, env: Env, ctx: ExecutionContex
     // A relay from before /checklist answers "Unknown endpoint".
     if (response.status === 404 && message === "Unknown endpoint") throw new HttpError(503, "unavailable", "Player lookup is not available yet.");
     if (response.status === 404) throw new HttpError(404, "not_found", message || "Player not found.");
+    if (response.status === 400 && message.startsWith("data is required")) throw new HttpError(503, "unavailable", "Player lookup is not available yet.");
     if (response.status === 400 || response.status === 413) throw new HttpError(response.status, "bad_request", message || "Invalid request.");
     if (response.status === 429) throw new HttpError(429, "rate_limited", message || "Hypixel rate limit reached. Wait a few minutes.", 120);
-    if (response.status === 503) throw new HttpError(503, "bad_key", message || "The server's Hypixel API key is not working.");
     throw new HttpError(502, "relay", "The profile server is down. Try again later.");
   }
   const text = await boundedText(response, MAX_RESULT_BYTES);

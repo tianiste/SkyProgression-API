@@ -18,7 +18,7 @@ Requests that carry a browser `Origin` header are refused, except `/checklist` f
 | `/profile?uuid=<32 hex>[&fresh=1]` | The raw Hypixel `v2/skyblock/profiles` body, passed through unparsed (max 16 MB). `X-Fetched-At` says when it was fetched; `X-Cache` is `HIT`, `STALE` or `MISS` |
 | `/prices` | `{"updatedAt", "prices": {id: {buy, sell, source, updatedAt, available, npc?, npcUpdatedAt?}}, "mayor": [...] \| null, "complete", "bazaarAt"}` |
 | `/resale?tag=<item>&Rarity=...` | `{"price": {...} \| null}`: Coflnet's lowest BIN for one item copy with its modifiers |
-| `POST /checklist` | Body `{"ign" or "uuid", "profile"?: id or name, "requirements": [...]}` (a guide's requirements, the website's `/guides/<id>.json` format; max 128 KB). Answers `{"player", "uuid", "profile", "profiles": [{id, name, mode, selected}], "fetchedAt", "api": {inventory, vault, collections, skills}, "results": [{id, state, ...}]}`; `state` is `owned`, `partial`, `missing`, `unknown` or `manual`. Evaluated by the engine on the relay |
+| `POST /checklist` | Body `{"ign" or "uuid", "profile"?: id or name, "requirements": [...]}` (a guide's requirements, the website's `/guides/<id>.json` format; max 128 KB). Answers `{"player", "uuid", "profile", "profiles": [{id, name, mode, selected}], "fetchedAt", "api": {inventory, vault, collections, skills}, "results": [{id, state, ...}]}`; `state` is `owned`, `partial`, `missing`, `unknown` or `manual`. The profile comes the same way as `/profile`; the engine on the relay evaluates it |
 
 Status codes: `400` bad input, `404` unknown player or profile, `413` request too large, `429` rate limited (with
 `Retry-After`), `502` an upstream service or the relay failed, `503` no or invalid Hypixel key, prices still loading, or
@@ -26,10 +26,13 @@ Status codes: `400` bad input, `404` unknown player or profile, `413` request to
 
 ### Checklist
 
-The website sends a guide's requirements and a player; the Worker resolves the name, forwards to the relay (the
-companion runs the same Java engine as the mod) and reuses a result for 2 minutes per player, profile and requirements
-(SHA-256 of the requirements, so a changed guide is a new key). Limits: 20 lookups per minute per IP plus the general
-per-IP limit and the global Hypixel limit; the relay reuses its profile copy for 5 minutes, so looking at several guides
+The website sends a guide's requirements and a player. The Worker resolves the name and gets the player's profiles
+exactly as `/profile` does (its cache, then the relay, then its own key; the per-player and Hypixel limits apply only
+when it fetches), then posts the raw body (spliced in as bytes, not parsed) with the requirements to the relay's
+`/checklist`, where the companion runs the same Java engine as the mod; the relay does not call Hypixel for it. A result
+is reused for 2 minutes per player, profile and requirements (SHA-256 of the requirements, so a changed guide is a new
+key). Limits: 20 lookups per minute per IP plus the general per-IP limit; the profile copy is reused for 5 minutes (up
+to 30 while a refresh runs), so looking at several guides
 costs one Hypixel call. Without `RELAY_URL` and `RELAY_SECRET` it answers `503` `unavailable`.
 
 ### Profiles
