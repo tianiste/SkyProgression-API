@@ -77,6 +77,19 @@ per request or cron run, 50 subrequests per invocation, 5 cron triggers per acco
 1,000 writes a day. See [Workers limits](https://developers.cloudflare.com/workers/platform/limits/) and
 [KV limits](https://developers.cloudflare.com/kv/platform/limits/).
 
+## Profile relay (application keys with an IP allowlist)
+
+Hypixel application keys can be locked to an IP allowlist, and a Worker has no fixed outbound IP. Then the key lives on
+a small fixed-IP server running the SkyProgression companion in relay mode (setup:
+[deploy/relay](https://github.com/tianiste/SkyProgression/tree/main/deploy/relay) in the mod repository), and this
+Worker forwards `/profile` to it:
+
+- `RELAY_URL` (`vars` in `wrangler.jsonc`, e.g. `https://relay.skyprogression.dev`) and the `RELAY_SECRET` secret
+  (`npx wrangler secret put RELAY_SECRET`, the same value as on the server). With both set, `/profile` goes to the relay
+  and `HYPIXEL_API_KEY` is not needed; `/health` reports `"relay": true`.
+- The relay answers only requests carrying the secret, so only this Worker can use the key. Caching, rate limits and
+  error messages stay the same; relay failures answer `502`.
+
 ## Hypixel API key
 
 **A Hypixel application key is needed for public use.** Personal developer keys are meant for personal and

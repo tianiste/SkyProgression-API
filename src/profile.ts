@@ -56,14 +56,16 @@ function respond(entry: Entry, state: string, extra: Record<string, string> = {}
 }
 
 async function fetchProfile(uuid: string, env: Env, ctx: ExecutionContext): Promise<Entry> {
+  const relay = relayUrl(env);
   // Trimmed: a key pasted into the dashboard with a space or line break would otherwise be rejected as invalid.
   const key = env.HYPIXEL_API_KEY?.trim().replace(/^["']|["']$/g, "");
-  if (!key) throw new HttpError(503, "no_key", "The server has no Hypixel API key configured.");
+  if (!relay && !key) throw new HttpError(503, "no_key", "The server has no Hypixel API key configured.");
   const player = await env.PLAYER_LIMIT.limit({ key: uuid });
   if (!player.success) throw new HttpError(429, "rate_limited", "This player was refreshed too often. Wait a minute.", 60);
   const global = await env.HYPIXEL_LIMIT.limit({ key: "hypixel" });
   if (!global.success) throw new HttpError(429, "rate_limited", "The server is busy. Wait a minute before loading again.", 60);
-  const response = await get(`https://api.hypixel.net/v2/skyblock/profiles?uuid=${uuid}`, { "API-Key": key }, 15_000);
+  if (relay) return fromRelay(relay, uuid, env, ctx);
+  const response = await get(`https://api.hypixel.net/v2/skyblock/profiles?uuid=${uuid}`, { "API-Key": key! }, 15_000);
   if (response.status === 403) {
     // Hypixel's short reason ("Invalid API key"), never the key itself.
     const cause = await boundedJson<{ cause?: string }>(response, 4096).then((b) => String(b.cause ?? "").slice(0, 80)).catch(() => "");
@@ -72,7 +74,33 @@ async function fetchProfile(uuid: string, env: Env, ctx: ExecutionContext): Prom
   if (response.status === 429) throw new HttpError(429, "rate_limited", "Hypixel rate limit reached. Wait a few minutes.", 120);
   if (response.status === 404 || response.status === 204) throw new HttpError(404, "not_found", "Player not found.");
   if (response.status !== 200) throw new HttpError(502, "upstream", `Hypixel returned ${response.status}.`);
-  const entry = { at: Date.now(), body: await boundedBytes(response, MAX_PROFILE_BYTES) };
+  return store(uuid, { at: Date.now(), body: await boundedBytes(response, MAX_PROFILE_BYTES) }, ctx);
+}
+
+/** Relay base URL when both RELAY_URL and RELAY_SECRET are configured, else null (the Worker calls Hypixel itself). */
+export function relayUrl(env: Env): string | null {
+  const url = env.RELAY_URL?.trim().replace(/\/+$/, "");
+  return url && env.RELAY_SECRET?.trim() ? url : null;
+}
+
+/**
+ * Hypixel application keys can be locked to an IP allowlist, and Workers have no fixed outbound IP, so the key may live
+ * on a fixed-IP server running the companion in relay mode. Its answers keep their status and message.
+ */
+async function fromRelay(relay: string, uuid: string, env: Env, ctx: ExecutionContext): Promise<Entry> {
+  const response = await get(`${relay}/profile?uuid=${uuid}&fresh=1`, { "X-Relay-Secret": env.RELAY_SECRET!.trim() }, 20_000);
+  if (response.status !== 200) {
+    const message = await boundedJson<{ error?: string }>(response, 4096).then((b) => String(b.error ?? "").slice(0, 160)).catch(() => "");
+    if (response.status === 429) throw new HttpError(429, "rate_limited", message || "Hypixel rate limit reached. Wait a few minutes.", 120);
+    if (response.status === 404 && message !== "Unknown endpoint") throw new HttpError(404, "not_found", message || "Player not found.");
+    if (response.status === 503) throw new HttpError(503, "bad_key", message || "The profile relay has no working Hypixel key.");
+    throw new HttpError(502, "relay", "The profile relay is unavailable. Try again later.");
+  }
+  const fetchedAt = Date.parse(response.headers.get("X-Fetched-At") ?? "");
+  return store(uuid, { at: Number.isFinite(fetchedAt) ? fetchedAt : Date.now(), body: await boundedBytes(response, MAX_PROFILE_BYTES) }, ctx);
+}
+
+function store(uuid: string, entry: Entry, ctx: ExecutionContext): Entry {
   remember(uuid, entry);
   ctx.waitUntil(caches.default.put(cacheKey("profile", uuid), new Response(entry.body, {
     headers: { "Content-Type": "application/json", "Cache-Control": `max-age=${STALE_MS / 1000}`, "X-Fetched-At-Ms": String(entry.at) },
