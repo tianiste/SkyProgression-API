@@ -33,7 +33,7 @@ async function route(request: Request, env: Env, ctx: ExecutionContext): Promise
     case "/uuid": {
       const name = url.searchParams.get("name") ?? "";
       if (!/^[A-Za-z0-9_]{1,16}$/.test(name)) throw new HttpError(400, "bad_request", "Enter a valid Minecraft name.");
-      return json(await uuid(name, ctx));
+      return json(await uuid(name, env, ctx));
     }
     case "/prices":
       return prices(env);

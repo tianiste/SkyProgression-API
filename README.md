@@ -13,7 +13,7 @@ Requests that carry a browser `Origin` header are refused (no CORS).
 | Endpoint | What it returns |
 | --- | --- |
 | `/health` | `{"ok": true, "ready": <key configured>, "prices": {"updatedAt", "count"} \| null}` |
-| `/uuid?name=<Minecraft name>` | `{"id": "<32 hex>", "name": "<name>"}` from Mojang, cached for a day (unknown names for 10 minutes). Mojang refuses many Cloudflare addresses (403, seen on the deployed Worker), so the mod asks Mojang itself and uses this only as a fallback |
+| `/uuid?name=<Minecraft name>` | `{"id": "<32 hex>", "name": "<name>"}` from Mojang, cached for a day (unknown names for 10 minutes). Mojang refuses many Cloudflare addresses (403, seen on the deployed Worker), so the mod asks Mojang itself and uses this only as a fallback; when Mojang refuses the Worker and a relay is configured, the relay looks the name up |
 | `/profile?uuid=<32 hex>[&fresh=1]` | The raw Hypixel `v2/skyblock/profiles` body, passed through unparsed (max 16 MB). `X-Fetched-At` says when it was fetched; `X-Cache` is `HIT`, `STALE` or `MISS` |
 | `/prices` | `{"updatedAt", "prices": {id: {buy, sell, source, updatedAt, available, npc?, npcUpdatedAt?}}, "mayor": [...] \| null, "complete", "bazaarAt"}` |
 | `/resale?tag=<item>&Rarity=...` | `{"price": {...} \| null}`: Coflnet's lowest BIN for one item copy with its modifiers |
@@ -89,6 +89,10 @@ Worker forwards `/profile` to it:
   and `HYPIXEL_API_KEY` is not needed; `/health` reports `"relay": true`.
 - The relay answers only requests carrying the secret, so only this Worker can use the key. Caching, rate limits and
   error messages stay the same; relay failures answer `502`.
+- With `HYPIXEL_API_KEY` also set, a rejected relay key or a relay that is down falls back to that key and skips the
+  relay for 10 minutes; if that key is rejected meanwhile, the relay is asked again at once. With both keys rejected,
+  `/profile` answers `503` (`bad_key`).
+- `/uuid` uses the relay (`/uuid` with the same secret, cached for a day there) when Mojang refuses the Worker.
 
 ## Hypixel API key
 

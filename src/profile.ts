@@ -64,18 +64,43 @@ async function fetchProfile(uuid: string, env: Env, ctx: ExecutionContext): Prom
   if (!player.success) throw new HttpError(429, "rate_limited", "This player was refreshed too often. Wait a minute.", 60);
   const global = await env.HYPIXEL_LIMIT.limit({ key: "hypixel" });
   if (!global.success) throw new HttpError(429, "rate_limited", "The server is busy. Wait a minute before loading again.", 60);
+  let relayError: HttpError | undefined;
   if (relay && Date.now() >= relaySkipUntil) {
     try {
       return await fromRelay(relay, uuid, env, ctx);
     } catch (e) {
       // The relay's key not valid yet (e.g. an application key under review) or the relay down: use this Worker's own
       // key when it has one, and skip the relay for a while instead of asking it on every lookup.
-      if (!(e instanceof HttpError) || !key || (e.code !== "bad_key" && e.code !== "relay")) throw e;
+      if (!(e instanceof HttpError) || !key || !relayFailure(e)) throw e;
+      relayError = e;
       relaySkipUntil = Date.now() + RELAY_RETRY_MS;
     }
   }
   if (!key) throw new HttpError(503, "bad_key", "The profile relay has no working Hypixel key.");
-  return direct(uuid, key, ctx);
+  try {
+    return await direct(uuid, key, ctx);
+  } catch (e) {
+    if (!(e instanceof HttpError) || e.code !== "bad_key" || !relay) throw e;
+    // This Worker's key rejected while the relay was being skipped: the relay's key may have been approved meanwhile.
+    if (!relayError) {
+      try {
+        const entry = await fromRelay(relay, uuid, env, ctx);
+        relaySkipUntil = 0;
+        return entry;
+      } catch (r) {
+        if (!(r instanceof HttpError) || !relayFailure(r)) throw r;
+        relayError = r;
+      }
+    }
+    throw relayError.code === "relay"
+      ? new HttpError(503, "bad_key", `${e.message} The profile relay is unavailable.`)
+      : new HttpError(503, "bad_key", "Both of the server's Hypixel API keys were rejected. Try again later.");
+  }
+}
+
+/** A relay answer that another key may get past: its key rejected, or the relay unreachable. */
+function relayFailure(e: HttpError): boolean {
+  return e.code === "bad_key" || e.code === "relay";
 }
 
 /** After the relay's key was rejected or the relay failed, profiles go direct for this long before the relay is tried again. */
@@ -158,7 +183,7 @@ export async function profile(uuid: string, fresh: boolean, env: Env, ctx: Execu
 const names = new Map<string, { at: number; id: string; name: string } | { at: number; missing: true }>();
 
 /** Minecraft name to UUID through Mojang, cached for a day (unknown names for ten minutes). */
-export async function uuid(name: string, ctx: ExecutionContext): Promise<{ id: string; name: string }> {
+export async function uuid(name: string, env: Env, ctx: ExecutionContext): Promise<{ id: string; name: string }> {
   const key = name.toLowerCase();
   const hit = names.get(key);
   if (hit && Date.now() - hit.at < ("missing" in hit ? 10 * 60_000 : 24 * 3600_000)) {
@@ -179,6 +204,16 @@ export async function uuid(name: string, ctx: ExecutionContext): Promise<{ id: s
       if (response.status === 200 || response.status === 404 || response.status === 204) break;
     } catch {
       response = undefined;
+    }
+  }
+  const relay = relayUrl(env);
+  if (relay && (!response || (response.status !== 200 && response.status !== 404 && response.status !== 204))) {
+    // Mojang refuses many Cloudflare addresses (403): ask the relay, which looks names up from its own IP.
+    response = (await get(`${relay}/uuid?name=${name}`, { "X-Relay-Secret": env.RELAY_SECRET!.trim() }, 10_000).catch(() => undefined)) ?? response;
+    if (response?.status === 404) {
+      // An older relay without /uuid answers "Unknown endpoint"; that is not an unknown player.
+      const message = await boundedJson<{ error?: string }>(response.clone(), 4096).then((b) => String(b.error ?? "")).catch(() => "");
+      if (message === "Unknown endpoint") throw new HttpError(502, "upstream", "Mojang is unavailable. Try again later.");
     }
   }
   if (!response) throw new HttpError(502, "upstream", "Mojang is unavailable. Try again later.");
