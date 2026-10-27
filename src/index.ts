@@ -1,4 +1,5 @@
 import { checklist, cors, preflight } from "./checklist";
+import { player, texture } from "./player";
 import { HttpError, error, json } from "./http";
 import { priceStatus, prices, refreshPrices, resale } from "./prices";
 import { profile, relayUrl, uuid } from "./profile";
@@ -26,6 +27,14 @@ async function route(request: Request, env: Env, ctx: ExecutionContext): Promise
     const ip = request.headers.get("CF-Connecting-IP") ?? "unknown";
     if (!(await env.IP_LIMIT.limit({ key: ip })).success) throw new HttpError(429, "rate_limited", "Too many requests. Wait a minute.", 60);
     return checklist(request, env, ctx);
+  }
+  if (url.pathname === "/player" || url.pathname.startsWith("/texture/")) {
+    // The website's player pages and the 3D model's textures: GET with CORS for the same pages as /checklist.
+    if (request.method !== "GET") throw new HttpError(405, "method", "GET required.");
+    cors(request);
+    const ip = request.headers.get("CF-Connecting-IP") ?? "unknown";
+    if (!(await env.IP_LIMIT.limit({ key: ip })).success) throw new HttpError(429, "rate_limited", "Too many requests. Wait a minute.", 60);
+    return url.pathname === "/player" ? player(request, env, ctx) : texture(request, ctx);
   }
   if (request.method !== "GET") throw new HttpError(405, "method", "GET required.");
   // Browsers send Origin on cross-site requests; the mod does not. No CORS: pages cannot use the other endpoints.
@@ -65,7 +74,8 @@ export default {
       response = error(e instanceof HttpError ? e : new HttpError(502, "upstream", "Data service unavailable. Please try again later."));
     }
     // Allowed pages also need CORS headers on errors, or the browser hides the message.
-    if (new URL(request.url).pathname === "/checklist") {
+    const path = new URL(request.url).pathname;
+    if (path === "/checklist" || path === "/player" || path.startsWith("/texture/")) {
       let headers: Record<string, string> = {};
       try { headers = cors(request); } catch { /* Other origins get no CORS headers. */ }
       for (const [k, v] of Object.entries(headers)) response.headers.set(k, v);

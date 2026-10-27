@@ -1,17 +1,14 @@
 import { HttpError, baseHeaders, boundedJson, boundedText, USER_AGENT } from "./http";
 import type { Env } from "./index";
 import { profileEntry, relayUrl, uuid } from "./profile";
+import { cached, store } from "./results";
 
-/** Pages that may call /checklist from a browser: the website, www and the local Astro dev server. */
+/** Pages that may call /checklist, /player and /texture from a browser: the website, www and the local Astro dev server. */
 const ORIGINS = new Set(["https://skyprogression.dev", "https://www.skyprogression.dev", "http://localhost:4321", "http://127.0.0.1:4321"]);
 const MAX_BODY_BYTES = 128 * 1024;
 const MAX_RESULT_BYTES = 1024 * 1024;
 /** A result is reused this long for the same player, profile and requirements (the profile copy itself is fresh for 5 minutes). */
 const RESULT_MS = 2 * 60_000;
-const MEMORY_ENTRIES = 64;
-
-interface Entry { at: number; body: string }
-const memory = new Map<string, Entry>();
 
 /** CORS headers for an allowed page origin; empty for requests without Origin (the mod, curl). Throws for other origins. */
 export function cors(request: Request): Record<string, string> {
@@ -60,7 +57,7 @@ export async function checklist(request: Request, env: Env, ctx: ExecutionContex
 
   const requirements = JSON.stringify(body.requirements);
   const key = `${id}/${profile.toLowerCase()}/${await sha256(requirements)}`;
-  const hit = await cached(key);
+  const hit = await cached(`checklist/${key}`, RESULT_MS);
   if (hit) return answer(hit.body, player, "HIT");
 
   // The engine runs on the relay; without one there is nothing to evaluate with.
@@ -94,7 +91,7 @@ export async function checklist(request: Request, env: Env, ctx: ExecutionContex
     throw new HttpError(502, "relay", "The profile server is down. Try again later.");
   }
   const text = await boundedText(response, MAX_RESULT_BYTES);
-  store(key, { at: Date.now(), body: text }, ctx);
+  store(`checklist/${key}`, { at: Date.now(), body: text }, RESULT_MS, ctx);
   return answer(text, player, "MISS");
 }
 
@@ -110,32 +107,4 @@ function answer(body: string, player: string | undefined, state: string): Respon
 async function sha256(text: string): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
-}
-
-function cacheKey(key: string): Request {
-  return new Request(`https://skyprogression-api.internal/checklist/${key}`);
-}
-
-async function cached(key: string): Promise<Entry | undefined> {
-  const hit = memory.get(key);
-  if (hit && Date.now() - hit.at < RESULT_MS) return hit;
-  const response = await caches.default.match(cacheKey(key));
-  if (!response) return undefined;
-  const at = Number(response.headers.get("X-At-Ms") ?? "0");
-  if (!(Date.now() - at < RESULT_MS)) return undefined;
-  const entry = { at, body: await response.text() };
-  memory.set(key, entry);
-  return entry;
-}
-
-function store(key: string, entry: Entry, ctx: ExecutionContext): void {
-  memory.delete(key);
-  memory.set(key, entry);
-  for (const old of memory.keys()) {
-    if (memory.size <= MEMORY_ENTRIES) break;
-    memory.delete(old);
-  }
-  ctx.waitUntil(caches.default.put(cacheKey(key), new Response(entry.body, {
-    headers: { "Content-Type": "application/json", "Cache-Control": `max-age=${RESULT_MS / 1000}`, "X-At-Ms": String(entry.at) },
-  })).catch(() => undefined));
 }

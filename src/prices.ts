@@ -209,14 +209,19 @@ export async function refreshPrices(env: Env): Promise<{ step: string; auctions:
   return { step, auctions, prices: Object.keys(b.prices).length };
 }
 
-/** The current bundle for the mod (without the refresh bookkeeping), read from KV at most once a minute per isolate. */
-export async function prices(env: Env): Promise<Response> {
+/** The stored bundle as JSON text, read from KV at most once a minute per isolate (the website's pages send it to the relay unparsed). */
+export async function bundleText(env: Env): Promise<string> {
   if (!memoryBundle || Date.now() - memoryBundle.at > 60_000) {
     const text = await env.PRICES.get(BUNDLE_KEY);
     if (text) memoryBundle = { at: Date.now(), text };
   }
   if (!memoryBundle) throw new HttpError(503, "prices_loading", "Prices are still loading. Try again in a few minutes.", 180);
-  const b = JSON.parse(memoryBundle.text) as Bundle;
+  return memoryBundle.text;
+}
+
+/** The current bundle for the mod (without the refresh bookkeeping). */
+export async function prices(env: Env): Promise<Response> {
+  const b = JSON.parse(await bundleText(env)) as Bundle;
   const auctionIds = ITEM_IDS.filter((id) => !b.status.bazaarIds.includes(id));
   const auctionsKnown = auctionIds.filter((id) => b.status.fetched[id]).length;
   return json({

@@ -8,7 +8,7 @@ holds the Hypixel API key, caches, and rate-limits.
 ## Endpoints
 
 All endpoints answer JSON; all but `/checklist` are `GET`. Errors look like `{"error": "message", "code": "rate_limited"}`.
-Requests that carry a browser `Origin` header are refused, except `/checklist` from the website (CORS for
+Requests that carry a browser `Origin` header are refused, except `/checklist`, `/player` and `/texture` from the website (CORS for
 `https://skyprogression.dev`, `https://www.skyprogression.dev` and the Astro dev server `http://localhost:4321`).
 
 | Endpoint | What it returns |
@@ -18,11 +18,21 @@ Requests that carry a browser `Origin` header are refused, except `/checklist` f
 | `/profile?uuid=<32 hex>[&fresh=1]` | The raw Hypixel `v2/skyblock/profiles` body, passed through unparsed (max 16 MB). `X-Fetched-At` says when it was fetched; `X-Cache` is `HIT`, `STALE` or `MISS` |
 | `/prices` | `{"updatedAt", "prices": {id: {buy, sell, source, updatedAt, available, npc?, npcUpdatedAt?}}, "mayor": [...] \| null, "complete", "bazaarAt"}` |
 | `/resale?tag=<item>&Rarity=...` | `{"price": {...} \| null}`: Coflnet's lowest BIN for one item copy with its modifiers |
+| `/player?ign=` (or `uuid=`)`&view=&profile=&method=&price=&god=&gear=` | One page of the website's player pages, computed on the relay by the same engine as the mod: `view` is `overview`, `gear`, `upgrades`, `methods`, `start` or `hotm`; `method` a mod `MiningMethod` name (default `MF_GEMS`); `price` `INSTANT_SELL`, `SELL_OFFER` or `NPC_SELL`; `god=false` without God Potion; `gear=equipped` (gear view) uses what is worn instead of the best owned. Every answer has `player`, `uuid`, `fetchedAt`, `pricesAt`, `profile`, `profiles`, `api`, the method and price lists and `model` (skin texture hash and worn armor for the 3D model), plus the view's data. Max 2 MB |
+| `/texture/<hash>` | A skin or player-head PNG from `textures.minecraft.net` (which sends no CORS headers), max 128 KB, cached for a day |
 | `POST /checklist` | Body `{"ign" or "uuid", "profile"?: id or name, "requirements": [...]}` (a guide's requirements, the website's `/guides/<id>.json` format; max 128 KB). Answers `{"player", "uuid", "profile", "profiles": [{id, name, mode, selected}], "fetchedAt", "api": {inventory, vault, collections, skills}, "results": [{id, state, ...}]}`; `state` is `owned`, `partial`, `missing`, `unknown` or `manual`. The profile comes the same way as `/profile`; the engine on the relay evaluates it |
 
 Status codes: `400` bad input, `404` unknown player or profile, `413` request too large, `429` rate limited (with
 `Retry-After`), `502` an upstream service or the relay failed, `503` no or invalid Hypixel key, prices still loading, or
-`/checklist` without a relay (`unavailable`: "Player lookup is not available yet").
+`/checklist` or `/player` without a relay or with a relay that predates them (`unavailable`).
+
+### Player pages
+
+`/player` works like the checklist below: the Worker resolves the name, gets the profile as `/profile` does, and posts it
+with its price bundle from KV (both spliced in as text, not parsed) and the page options to the relay's `/web`, which
+decodes the profile once per player and fetch time and answers the page's JSON. Answers are cached for 2 minutes per
+player, profile, view and options (`hotm` ignores method and prices). Resale quotes are not used: upgrade costs are the
+cash outlay, without the replaced item's sale value. The relay asks Mojang's session server for the skin (cached an hour).
 
 ### Checklist
 
@@ -78,7 +88,7 @@ itself: the Worker validates the filters, reuses Coflnet's filter list per item 
 
 | Limit | Value |
 | --- | --- |
-| Requests per IP | 240 per minute (`/health` is not counted); `/checklist` also 20 per minute |
+| Requests per IP | 240 per minute (`/health` is not counted); `/checklist` and uncached `/player` pages also share 20 per minute |
 | Hypixel refreshes per player | 4 per minute |
 | Hypixel calls in total | 100 per minute per Cloudflare location |
 | Profile body | 16 MB |
