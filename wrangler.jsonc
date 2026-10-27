@@ -10,7 +10,7 @@
   "kv_namespaces": [{ "binding": "PRICES" }],
   // namespace_id values are local identifiers chosen here, not account IDs. Limits apply per Cloudflare location.
   "ratelimits": [
-    { "name": "IP_LIMIT", "namespace_id": "1001", "simple": { "limit": 120, "period": 60 } },
+    { "name": "IP_LIMIT", "namespace_id": "1001", "simple": { "limit": 240, "period": 60 } },
     { "name": "PLAYER_LIMIT", "namespace_id": "1002", "simple": { "limit": 4, "period": 60 } },
     { "name": "HYPIXEL_LIMIT", "namespace_id": "1003", "simple": { "limit": 100, "period": 60 } }
   ]

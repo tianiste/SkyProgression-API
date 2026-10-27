@@ -64,7 +64,7 @@ itself: the Worker validates the filters, reuses Coflnet's filter list per item 
 
 | Limit | Value |
 | --- | --- |
-| Requests per IP | 120 per minute (`/health` is not counted) |
+| Requests per IP | 240 per minute (`/health` is not counted) |
 | Hypixel refreshes per player | 4 per minute |
 | Hypixel calls in total | 100 per minute per Cloudflare location |
 | Profile body | 16 MB |
