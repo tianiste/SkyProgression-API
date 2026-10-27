@@ -3,7 +3,8 @@
   "name": "skyprogression-api",
   "main": "src/index.ts",
   "compatibility_date": "2026-10-20",
-  "observability": { "enabled": false },
+  // Workers Logs (Cloudflare dashboard). The Worker never logs keys or response bodies.
+  "observability": { "enabled": true },
   // Every three minutes: one cron step refreshes one Hypixel resource and up to 40 Coflnet quotes.
   "triggers": { "crons": ["*/3 * * * *"] },
   // Wrangler creates the namespace on the first deploy and remembers it; no ID needs to be committed.
