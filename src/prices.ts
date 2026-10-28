@@ -134,18 +134,23 @@ async function refreshMayor(b: Bundle): Promise<void> {
   b.status.mayorAt = Date.now();
 }
 
+/** Coflnet has no listing (404/204) or does not know the tag at all (400 "item_not_found", e.g. PET_KUUDRA): no quote, not an outage. */
+function noQuote(status: number): boolean {
+  return status === 404 || status === 204 || status === 400;
+}
+
 /** Coflnet: current buy/sell for an Auction House item, or the lowest BIN of a "PET_TYPE;RARITY;LEVEL" key. */
 async function auctionQuote(id: string): Promise<Price | null> {
   if (id.includes(";")) {
     const [tag, rarity, level] = id.split(";");
     const response = await get(`https://sky.coflnet.com/api/item/price/${encodeURIComponent(tag)}/bin?Rarity=${encodeURIComponent(rarity)}&PetLevel=${encodeURIComponent(level)}`);
-    if (response.status !== 200) return response.status === 404 || response.status === 204 ? null : Promise.reject(new Error(`coflnet ${response.status}`));
+    if (response.status !== 200) return noQuote(response.status) ? null : Promise.reject(new Error(`coflnet ${response.status}`));
     const body = await boundedJson<{ lowest?: number }>(response, 64 * 1024);
     const lowest = Number(body.lowest ?? 0);
     return { buy: lowest, sell: 0, source: `Auction House lowest BIN, level ${level} (Coflnet)`, updatedAt: "Current lowest BIN", available: lowest > 0 };
   }
   const response = await get(`https://sky.coflnet.com/api/item/price/${encodeURIComponent(id)}/current?minAgeSeconds=120`);
-  if (response.status !== 200) return response.status === 404 || response.status === 204 ? null : Promise.reject(new Error(`coflnet ${response.status}`));
+  if (response.status !== 200) return noQuote(response.status) ? null : Promise.reject(new Error(`coflnet ${response.status}`));
   const body = await boundedJson<{ buy?: number; sell?: number; available?: number; isAh?: boolean; updatedAt?: string }>(response, 64 * 1024);
   const buy = Number(body.buy ?? 0);
   return {
