@@ -7,12 +7,14 @@ import { cached, store } from "./results";
 /** The website's player pages (the relay's WebViews); hotm does not depend on the method or prices. */
 const VIEWS = new Set(["overview", "gear", "upgrades", "methods", "start", "hotm"]);
 const PRICE_MODES = new Set(["INSTANT_SELL", "SELL_OFFER", "NPC_SELL"]);
+/** How purchases are priced: instant-buy (the lowest offer) or Bazaar buy orders (the top buy order). */
+const COST_MODES = new Set(["INSTANT_BUY", "BUY_ORDER"]);
 const MAX_RESULT_BYTES = 2 * 1024 * 1024;
 /** A page is reused this long for the same player, profile and options (the profile copy itself is fresh for 5 minutes). */
 const RESULT_MS = 2 * 60_000;
 
 /**
- * GET /player?ign= (or uuid=)&view=&profile=&method=&price=&god=&gear=: one player page computed by the engine on the relay.
+ * GET /player?ign= (or uuid=)&view=&profile=&method=&price=&cost=&god=&gear=: one player page computed by the engine on the relay.
  * The Worker resolves the name, gets the profile as for /profile and sends it with its price bundle (both unparsed); the
  * relay answers the page's JSON, which is cached here for two minutes per player, profile, view and options.
  */
@@ -26,6 +28,8 @@ export async function player(request: Request, env: Env, ctx: ExecutionContext):
   if (!/^[A-Z_]{1,24}$/.test(method)) throw new HttpError(400, "bad_request", "Invalid method.");
   const price = q.get("price") || "INSTANT_SELL";
   if (!PRICE_MODES.has(price)) throw new HttpError(400, "bad_request", "Invalid price mode.");
+  const cost = q.get("cost") || "INSTANT_BUY";
+  if (!COST_MODES.has(cost)) throw new HttpError(400, "bad_request", "Invalid cost mode.");
   const god = q.get("god") !== "false";
   const gear = q.get("gear") === "equipped" ? "equipped" : "best";
 
@@ -38,7 +42,7 @@ export async function player(request: Request, env: Env, ctx: ExecutionContext):
   }
   if (!/^[0-9a-f]{32}$/.test(id)) throw new HttpError(400, "bad_request", "uuid must be 32 hex characters.");
 
-  const options = view === "hotm" ? "-" : `${method}/${price}/${god}/${view === "gear" ? gear : "best"}`;
+  const options = view === "hotm" ? "-" : `${method}/${price}/${cost}/${god}/${view === "gear" ? gear : "best"}`;
   const key = `player/${id}/${profile.toLowerCase()}/${view}/${options}`;
   const hit = await cached(key, RESULT_MS);
   if (hit) return answer(hit.body, "HIT");
@@ -50,7 +54,7 @@ export async function player(request: Request, env: Env, ctx: ExecutionContext):
   if (!relay) throw new HttpError(503, "unavailable", "Player pages are not available yet.");
   const { entry } = await profileEntry(id, false, env, ctx);
   const bundle = await bundleText(env);
-  const head = JSON.stringify({ uuid: id, player: name, view, profile, method, price, god, gear, fetchedAt: new Date(entry.at).toISOString() });
+  const head = JSON.stringify({ uuid: id, player: name, view, profile, method, price, cost, god, gear, fetchedAt: new Date(entry.at).toISOString() });
   // Profile and bundle are spliced in as text: parsing them would cost more CPU than the Worker has.
   const payload = new Blob([`${head.slice(0, -1)},"bundle":`, bundle, `,"data":`, entry.body, "}"]);
   let response: Response;
