@@ -31,8 +31,13 @@ Status codes: `400` bad input, `404` unknown player or profile, `413` request to
 `/player` works like the checklist below: the Worker resolves the name, gets the profile as `/profile` does, and posts it
 with its price bundle from KV (both spliced in as text, not parsed) and the page options to the relay's `/web`, which
 decodes the profile once per player and fetch time and answers the page's JSON. Answers are cached for 2 minutes per
-player, profile, view and options (`hotm` ignores method and prices). Resale quotes are not used: upgrade costs are the
-cash outlay, without the replaced item's sale value. The relay asks Mojang's session server for the skin (cached an hour).
+player, profile, view and options (`hotm` ignores method and prices) in the isolate's memory and the Cache API; both are
+per Cloudflare location, and one visitor's requests often reach different locations, so a repeat there is a `MISS`.
+The relay keeps its own pages for 10 minutes for every location (and builds a player's other tabs ahead after the first),
+so such a repeat costs the round trip, not the computation: its `Server-Timing` shows `relay-build;dur=0`. Resale quotes
+are not used: upgrade costs are the cash outlay, without the replaced item's sale value. The relay asks Mojang's session
+server for the skin (cached an hour). A computed page carries `Server-Timing`: `name`, `profile` (with `HIT`, `STALE` or
+`MISS`), `relay`, and the relay's `relay-read`, `relay-decode`, `relay-build` in milliseconds.
 
 ### Checklist
 
