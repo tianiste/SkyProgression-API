@@ -191,8 +191,8 @@ export async function profileEntry(uuid: string, fresh: boolean, env: Env, ctx: 
 
 const names = new Map<string, { at: number; id: string; name: string } | { at: number; missing: true }>();
 
-/** Minecraft name to UUID through Mojang, cached for a day (unknown names for ten minutes). */
-export async function uuid(name: string, env: Env, ctx: ExecutionContext): Promise<{ id: string; name: string }> {
+/** A name already resolved in this location (memory, then the Cache API), without asking anyone; null when unknown here. */
+export async function knownUuid(name: string): Promise<{ id: string; name: string } | null> {
   const key = name.toLowerCase();
   const hit = names.get(key);
   if (hit && Date.now() - hit.at < ("missing" in hit ? 10 * 60_000 : 24 * 3600_000)) {
@@ -200,11 +200,27 @@ export async function uuid(name: string, env: Env, ctx: ExecutionContext): Promi
     return { id: hit.id, name: hit.name };
   }
   const cachedResponse = await caches.default.match(cacheKey("uuid", key));
-  if (cachedResponse) {
-    const value = await cachedResponse.json<{ id: string; name: string }>();
-    names.set(key, { at: Date.now(), ...value });
-    return value;
-  }
+  if (!cachedResponse) return null;
+  const value = await cachedResponse.json<{ id: string; name: string }>();
+  names.set(key, { at: Date.now(), ...value });
+  return value;
+}
+
+/** Keeps a resolved name for a day (memory and the Cache API), for example one the relay resolved. */
+export function rememberUuid(name: string, value: { id: string; name: string }, ctx: ExecutionContext): void {
+  const key = name.toLowerCase();
+  if (names.size > 2000) names.clear();
+  names.set(key, { at: Date.now(), ...value });
+  ctx.waitUntil(caches.default.put(cacheKey("uuid", key), new Response(JSON.stringify(value), {
+    headers: { "Content-Type": "application/json", "Cache-Control": "max-age=86400" },
+  })).catch(() => undefined));
+}
+
+/** Minecraft name to UUID through Mojang, cached for a day (unknown names for ten minutes). */
+export async function uuid(name: string, env: Env, ctx: ExecutionContext): Promise<{ id: string; name: string }> {
+  const known = await knownUuid(name);
+  if (known) return known;
+  const key = name.toLowerCase();
   let response: Response | undefined;
   // The services host first; the older API host as a fallback when one of them is unavailable.
   for (const url of [`https://api.minecraftservices.com/minecraft/profile/lookup/name/${name}`, `https://api.mojang.com/users/profiles/minecraft/${name}`]) {
@@ -235,10 +251,6 @@ export async function uuid(name: string, env: Env, ctx: ExecutionContext): Promi
   const body = await boundedJson<{ id?: string; name?: string }>(response, 64 * 1024);
   if (!body.id || !/^[0-9a-f]{32}$/i.test(body.id)) throw new HttpError(404, "not_found", "Minecraft player not found.");
   const value = { id: body.id.toLowerCase(), name: body.name ?? name };
-  if (names.size > 2000) names.clear();
-  names.set(key, { at: Date.now(), ...value });
-  ctx.waitUntil(caches.default.put(cacheKey("uuid", key), new Response(JSON.stringify(value), {
-    headers: { "Content-Type": "application/json", "Cache-Control": "max-age=86400" },
-  })).catch(() => undefined));
+  rememberUuid(name, value, ctx);
   return value;
 }

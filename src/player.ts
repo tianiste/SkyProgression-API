@@ -1,7 +1,7 @@
 import { HttpError, baseHeaders, boundedBytes, boundedJson, boundedText, get, USER_AGENT } from "./http";
 import type { Env } from "./index";
 import { bundleText } from "./prices";
-import { profileEntry, relayUrl, uuid } from "./profile";
+import { knownUuid, profileEntry, relayUrl, rememberUuid, uuid } from "./profile";
 import { cached, store } from "./results";
 
 /** The website's player pages (the relay's WebViews); hotm does not depend on the method or prices. */
@@ -15,8 +15,10 @@ const RESULT_MS = 2 * 60_000;
 
 /**
  * GET /player?ign= (or uuid=)&view=&profile=&method=&price=&cost=&god=&gear=: one player page computed by the engine on the relay.
- * The Worker resolves the name, gets the profile as for /profile and sends it with its price bundle (both unparsed); the
- * relay answers the page's JSON, which is cached here for two minutes per player, profile, view and options.
+ * The relay is asked first, without a profile: it answers from a copy it already holds (under five minutes old, the same
+ * rule as this Worker's profile cache) and resolves names itself, so another Cloudflare location does not look the name up
+ * or fetch the profile again. Only when it holds none (409) does the Worker get the profile as for /profile and send it with
+ * its price bundle (both unparsed). The page's JSON is cached here for two minutes per player, profile, view and options.
  */
 export async function player(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
   const started = Date.now();
@@ -36,55 +38,98 @@ export async function player(request: Request, env: Env, ctx: ExecutionContext):
 
   let id = (q.get("uuid") ?? "").replaceAll("-", "").toLowerCase();
   let name = "";
+  let ign = "";
   if (!id) {
-    const ign = (q.get("ign") ?? "").trim();
+    ign = (q.get("ign") ?? "").trim();
     if (!/^[A-Za-z0-9_]{1,16}$/.test(ign)) throw new HttpError(400, "bad_request", "Enter a valid Minecraft name.");
-    ({ id, name } = await uuid(ign, env, ctx));
-  }
-  if (!/^[0-9a-f]{32}$/.test(id)) throw new HttpError(400, "bad_request", "uuid must be 32 hex characters.");
+    // Only names already resolved in this location; the relay resolves the others.
+    const known = await knownUuid(ign);
+    if (known) ({ id, name } = known);
+  } else if (!/^[0-9a-f]{32}$/.test(id)) throw new HttpError(400, "bad_request", "uuid must be 32 hex characters.");
 
   const options = view === "hotm" ? "-" : `${method}/${price}/${cost}/${god}/${view === "gear" ? gear : "best"}`;
-  const key = `player/${id}/${profile.toLowerCase()}/${view}/${options}`;
-  const hit = await cached(key, RESULT_MS);
-  if (hit) return answer(hit.body, "HIT");
+  const keyOf = (uuid: string) => `player/${uuid}/${profile.toLowerCase()}/${view}/${options}`;
+  if (id) {
+    const hit = await cached(keyOf(id), RESULT_MS);
+    if (hit) return answer(hit.body, "HIT");
+  }
 
   // Only work that reaches the relay counts towards the lookup limit.
   const ip = request.headers.get("CF-Connecting-IP") ?? "unknown";
   if (!(await env.CHECKLIST_LIMIT.limit({ key: ip })).success) throw new HttpError(429, "rate_limited", "Too many lookups. Wait a minute.", 60);
   const relay = relayUrl(env);
   if (!relay) throw new HttpError(503, "unavailable", "Player pages are not available yet.");
-  const named = Date.now();
-  const { entry, state } = await profileEntry(id, false, env, ctx);
   const bundle = await bundleText(env);
-  const fetched = Date.now();
-  const head = JSON.stringify({ uuid: id, player: name, view, profile, method, price, cost, god, gear, fetchedAt: new Date(entry.at).toISOString() });
-  // Profile and bundle are spliced in as text: parsing them would cost more CPU than the Worker has.
-  const payload = new Blob([`${head.slice(0, -1)},"bundle":`, bundle, `,"data":`, entry.body, "}"]);
-  let response: Response;
+  const named = Date.now();
+  const head = { uuid: id, player: id ? name : ign, view, profile, method, price, cost, god, gear };
+  let response = await postWeb(relay, env, head, bundle, null);
+  const asked = Date.now();
+  const timing = [`name;dur=${named - started}`, `relay;dur=${asked - named}`];
+  if (response.status === 200) {
+    const sent = response.headers.get("X-Uuid") ?? "";
+    if (!id && /^[0-9a-f]{32}$/.test(sent)) {
+      id = sent;
+      rememberUuid(ign, { id, name: (response.headers.get("X-Player") ?? "").replace(/[^A-Za-z0-9_]/g, "") || ign }, ctx);
+    }
+  } else {
+    const message = await boundedJson<{ error?: string; uuid?: string; name?: string }>(response, 4096).catch(() => ({} as { error?: string; uuid?: string; name?: string }));
+    // 409: the relay holds no fresh copy; a relay from before this answers 400 without the profile.
+    const before = response.status === 400 && String(message.error ?? "").startsWith("data and bundle are required");
+    // When the relay could not reach Mojang for an unknown name, this Worker looks it up itself below.
+    const noName = !id && response.status === 502;
+    if (response.status !== 409 && !before && !noName) throw relayError(response.status, String(message.error ?? ""));
+    if (!id && response.status === 409 && /^[0-9a-f]{32}$/.test(message.uuid ?? "")) {
+      ({ id, name } = { id: message.uuid!, name: String(message.name ?? "").replace(/[^A-Za-z0-9_]/g, "") || ign });
+      rememberUuid(ign, { id, name }, ctx);
+    }
+    if (!id) ({ id, name } = await uuid(ign, env, ctx));
+    if (ign) {
+      const hit = await cached(keyOf(id), RESULT_MS);
+      if (hit) return answer(hit.body, "HIT");
+    }
+    const { entry, state } = await profileEntry(id, false, env, ctx);
+    const fetched = Date.now();
+    response = await postWeb(relay, env, { ...head, uuid: id, player: name, fetchedAt: new Date(entry.at).toISOString() }, bundle, entry.body);
+    timing.push(`profile;dur=${fetched - asked};desc=${state}`, `upload;dur=${Date.now() - fetched}`);
+    if (response.status !== 200) {
+      const error = await boundedJson<{ error?: string }>(response, 4096).then((b) => String(b.error ?? "")).catch(() => "");
+      throw relayError(response.status, error);
+    }
+  }
+  if (!/^[0-9a-f]{32}$/.test(id)) throw new HttpError(502, "relay", "The profile server is down. Try again later.");
+  const text = await boundedText(response, MAX_RESULT_BYTES);
+  store(keyOf(id), { at: Date.now(), body: text }, RESULT_MS, ctx);
+  // Where a computed page's time went (Worker clocks advance only across I/O); the relay adds its own read, decode and build.
+  const relayTiming = (response.headers.get("Server-Timing") ?? "").replace(/[^a-z0-9;=., ]/gi, "").split(", ").filter(Boolean).map((t) => `relay-${t}`);
+  return answer(text, "MISS", [...timing, ...relayTiming].join(", "));
+}
+
+/** POST /web on the relay: the options, the price bundle and (when not null) the profile, spliced in as text (parsing them would cost more CPU than the Worker has). */
+async function postWeb(relay: string, env: Env, head: Record<string, unknown>, bundle: string, data: ArrayBuffer | null): Promise<Response> {
+  const text = JSON.stringify(head);
+  const parts: (string | ArrayBuffer)[] = [`${text.slice(0, -1)},"bundle":`, bundle];
+  if (data) parts.push(`,"data":`, data);
+  parts.push("}");
   try {
-    response = await fetch(`${relay}/web`, {
+    return await fetch(`${relay}/web`, {
       method: "POST",
       headers: { "User-Agent": USER_AGENT, "Content-Type": "application/json", Accept: "application/json", "X-Relay-Secret": env.RELAY_SECRET!.trim() },
-      body: payload,
+      body: new Blob(parts),
       signal: AbortSignal.timeout(25_000),
     });
   } catch {
     throw new HttpError(502, "relay", "The profile server is down. Try again later.");
   }
-  if (response.status !== 200) {
-    const message = await boundedJson<{ error?: string }>(response, 4096).then((b) => String(b.error ?? "").slice(0, 160)).catch(() => "");
-    // A relay from before /web answers "Unknown endpoint".
-    if (response.status === 404 && message === "Unknown endpoint") throw new HttpError(503, "unavailable", "Player pages are not available yet.");
-    if (response.status === 404) throw new HttpError(404, "not_found", message || "Player not found.");
-    if (response.status === 400 || response.status === 413) throw new HttpError(response.status, "bad_request", message || "Invalid request.");
-    throw new HttpError(502, "relay", "The profile server is down. Try again later.");
-  }
-  const text = await boundedText(response, MAX_RESULT_BYTES);
-  store(key, { at: Date.now(), body: text }, RESULT_MS, ctx);
-  // Where a computed page's time went (Worker clocks advance only across I/O); the relay adds its own read, decode and build.
-  const relayTiming = (response.headers.get("Server-Timing") ?? "").replace(/[^a-z0-9;=., ]/gi, "").split(", ").filter(Boolean).map((t) => `relay-${t}`);
-  const timing = [`name;dur=${named - started}`, `profile;dur=${fetched - named};desc=${state}`, `relay;dur=${Date.now() - fetched}`, ...relayTiming].join(", ");
-  return answer(text, "MISS", timing);
+}
+
+function relayError(status: number, error: string): HttpError {
+  const message = error.slice(0, 160);
+  // A relay from before /web answers "Unknown endpoint".
+  if (status === 404 && message === "Unknown endpoint") return new HttpError(503, "unavailable", "Player pages are not available yet.");
+  if (status === 404) return new HttpError(404, "not_found", message || "Player not found.");
+  if (status === 400 || status === 413) return new HttpError(status, "bad_request", message || "Invalid request.");
+  if (status === 429) return new HttpError(429, "rate_limited", message || "Mojang rate limit reached. Wait a minute.", 60);
+  return new HttpError(502, "relay", "The profile server is down. Try again later.");
 }
 
 function answer(body: string, state: string, timing?: string): Response {

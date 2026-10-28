@@ -28,16 +28,22 @@ Status codes: `400` bad input, `404` unknown player or profile, `413` request to
 
 ### Player pages
 
-`/player` works like the checklist below: the Worker resolves the name, gets the profile as `/profile` does, and posts it
-with its price bundle from KV (both spliced in as text, not parsed) and the page options to the relay's `/web`, which
-decodes the profile once per player and fetch time and answers the page's JSON. Answers are cached for 2 minutes per
+`/player` asks the relay's `/web` first with the page options, the price bundle from KV (spliced in as text, not parsed)
+and the uuid, or the name when this location has not resolved it yet (the relay resolves names itself, so Mojang is not
+asked from Cloudflare, which it often refuses). When the relay holds a copy of the profile under five minutes old (the same
+rule as `/profile`) it answers from it, so another location fetches and uploads nothing. Otherwise it answers 409 with the
+uuid and name, and the Worker gets the profile as `/profile` does (with its per-player and Hypixel limits, stale copies and
+its own key as a fallback) and posts it like the checklist below. The relay decodes a profile once per player and fetch
+time and answers the page's JSON. A relay from before this answers the first request with 400 and the profile is sent the
+same way. Answers are cached for 2 minutes per
 player, profile, view and options (`hotm` ignores method and prices) in the isolate's memory and the Cache API; both are
 per Cloudflare location, and one visitor's requests often reach different locations, so a repeat there is a `MISS`.
 The relay keeps its own pages for 10 minutes for every location (and builds a player's other tabs ahead after the first),
 so such a repeat costs the round trip, not the computation: its `Server-Timing` shows `relay-build;dur=0`. Resale quotes
 are not used: upgrade costs are the cash outlay, without the replaced item's sale value. The relay asks Mojang's session
-server for the skin (cached an hour). A computed page carries `Server-Timing`: `name`, `profile` (with `HIT`, `STALE` or
-`MISS`), `relay`, and the relay's `relay-read`, `relay-decode`, `relay-build` in milliseconds.
+server for the skin (cached an hour). A computed page carries `Server-Timing`: `name` (names resolved in this location),
+`relay` (the first request), `profile` (with `HIT`, `STALE` or `MISS`) and `upload` when the profile had to be sent, and the
+relay's `relay-read`, `relay-decode`, `relay-build` in milliseconds.
 
 ### Checklist
 
