@@ -100,6 +100,8 @@ Cloudflare free plan limits this design stays inside (checked October 2026): 100
 per request or cron run, 50 subrequests per invocation, 5 cron triggers per account; KV allows 100,000 reads and
 1,000 writes a day. See [Workers limits](https://developers.cloudflare.com/workers/platform/limits/) and
 [KV limits](https://developers.cloudflare.com/kv/platform/limits/).
+Other known limitations (key status, caching, slow first loads on the relay) are listed in
+[the mod repository's docs/LIMITATIONS.md](https://github.com/tianiste/SkyProgression/blob/main/docs/LIMITATIONS.md).
 
 ## Profile relay (application keys with an IP allowlist)
 
