@@ -19,6 +19,7 @@ const RESULT_MS = 2 * 60_000;
  * relay answers the page's JSON, which is cached here for two minutes per player, profile, view and options.
  */
 export async function player(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+  const started = Date.now();
   const q = new URL(request.url).searchParams;
   const view = q.get("view") ?? "overview";
   if (!VIEWS.has(view)) throw new HttpError(400, "bad_request", "Unknown view.");
@@ -52,8 +53,10 @@ export async function player(request: Request, env: Env, ctx: ExecutionContext):
   if (!(await env.CHECKLIST_LIMIT.limit({ key: ip })).success) throw new HttpError(429, "rate_limited", "Too many lookups. Wait a minute.", 60);
   const relay = relayUrl(env);
   if (!relay) throw new HttpError(503, "unavailable", "Player pages are not available yet.");
-  const { entry } = await profileEntry(id, false, env, ctx);
+  const named = Date.now();
+  const { entry, state } = await profileEntry(id, false, env, ctx);
   const bundle = await bundleText(env);
+  const fetched = Date.now();
   const head = JSON.stringify({ uuid: id, player: name, view, profile, method, price, cost, god, gear, fetchedAt: new Date(entry.at).toISOString() });
   // Profile and bundle are spliced in as text: parsing them would cost more CPU than the Worker has.
   const payload = new Blob([`${head.slice(0, -1)},"bundle":`, bundle, `,"data":`, entry.body, "}"]);
@@ -78,11 +81,16 @@ export async function player(request: Request, env: Env, ctx: ExecutionContext):
   }
   const text = await boundedText(response, MAX_RESULT_BYTES);
   store(key, { at: Date.now(), body: text }, RESULT_MS, ctx);
-  return answer(text, "MISS");
+  // Where a computed page's time went (Worker clocks advance only across I/O); the relay adds its own read, decode and build.
+  const relayTiming = (response.headers.get("Server-Timing") ?? "").replace(/[^a-z0-9;=., ]/gi, "").split(", ").filter(Boolean).map((t) => `relay-${t}`);
+  const timing = [`name;dur=${named - started}`, `profile;dur=${fetched - named};desc=${state}`, `relay;dur=${Date.now() - fetched}`, ...relayTiming].join(", ");
+  return answer(text, "MISS", timing);
 }
 
-function answer(body: string, state: string): Response {
-  return new Response(body, { headers: { ...baseHeaders(), "Content-Type": "application/json; charset=utf-8", "X-Cache": state } });
+function answer(body: string, state: string, timing?: string): Response {
+  const headers: Record<string, string> = { ...baseHeaders(), "Content-Type": "application/json; charset=utf-8", "X-Cache": state };
+  if (timing) headers["Server-Timing"] = timing;
+  return new Response(body, { headers });
 }
 
 const MAX_TEXTURE_BYTES = 128 * 1024;
