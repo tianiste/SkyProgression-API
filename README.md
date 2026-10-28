@@ -60,7 +60,7 @@ The cron trigger runs every 3 minutes and does one small step each time, so a ru
 - Bazaar items: one call to Hypixel's public `v2/skyblock/bazaar` every ~15 minutes. `buy` is the lowest sell
   offer (instant buy), `sell` the highest buy order (instant sell), Bazaar tax not included.
 - Auction House items and level-100 pets: Coflnet `item/price/<id>/current` and `.../bin` lookups, 40 per run
-  (about 175 items, so each quote is at most ~15 minutes old).
+  (about 190 items, so each quote is at most ~15 minutes old).
 - NPC sell prices: `npc_sell_price` from the official `v2/resources/skyblock/items`, every 6 hours.
 - Mayor and minister perks: `v2/resources/skyblock/election`, every 20 minutes.
 
